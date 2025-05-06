@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Inventory Management</h2>
+<form method="POST">
+    <div class="row mb-3">
+        <div class="col">
+            <input type="text" name="name" class="form-control" placeholder="Item Name" required>
+        </div>
+        <div class="col">
+            <input type="number" step="0.01" name="price" class="form-control" placeholder="Price" required>
+        </div>
+        <div class="col">
+            <input type="number" step="0.01" name="stock" class="form-control" placeholder="Stock" required>
+        </div>
+        <div class="col">
+            <button type="submit" class="btn btn-primary">Add Item</button>
+        </div>
+    </div>
+</form>
+
+<table class="table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Price</th>
+            <th>Stock</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in items %}
+        <tr>
+            <td>{{ item.name }}</td>
+            <td>${{ "%.2f"|format(item.price) }}</td>
+            <td>{{ "%.2f"|format(item.stock) }}</td>
+            <td>
+                <form action="{{ url_for('delete_item', item_id=item.id) }}" method="POST" style="display: inline;">
+                    <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure you want to delete this item?')">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %} 

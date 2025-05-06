@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Process Sale</h2>
+<form method="POST">
+    <div class="row mb-3">
+        <div class="col">
+            <select name="item_id" class="form-control" required>
+                <option value="">Select Item</option>
+                {% for item in items %}
+                <option value="{{ item.id }}">{{ item.name }} - ${{ "%.2f"|format(item.price) }} (Stock: {{ "%.2f"|format(item.stock) }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col">
+            <input type="number" step="0.01" name="quantity" class="form-control" placeholder="Quantity" required>
+        </div>
+        <div class="col">
+            <button type="submit" class="btn btn-primary">Process Sale</button>
+        </div>
+    </div>
+</form>
+
+<h3>Recent Sales</h3>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Item</th>
+            <th>Quantity</th>
+            <th>Total Price</th>
+            <th>Time</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for sale in sales %}
+        <tr>
+            <td>{{ sale.item.name }}</td>
+            <td>{{ "%.2f"|format(sale.quantity) }}</td>
+            <td>${{ "%.2f"|format(sale.total_price) }}</td>
+            <td>{{ sale.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %} 
