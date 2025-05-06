@@ -78,8 +78,9 @@ def report():
     daily_sales = db.session.query(func.date(Sale.timestamp), func.sum(Sale.total_price)).group_by(func.date(Sale.timestamp)).all()
     return render_template('report.html', total_sales=total_sales, most_sold=most_sold, daily_sales=daily_sales)
 
+# Initialize the database
+with app.app_context():
+    db.create_all()
+
 if __name__ == '__main__':
-    if not os.path.exists('pos.db'):
-        with app.app_context():
-            db.create_all()
     app.run(debug=True)
