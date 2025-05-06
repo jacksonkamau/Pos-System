@@ -7,6 +7,7 @@ from sqlalchemy import func
 import csv
 from io import StringIO
 from datetime import datetime
+import json
 
 app = Flask(__name__)
 # Use absolute path for database
@@ -34,8 +35,23 @@ class User(UserMixin, db.Model):
 class Item(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    price = db.Column(db.Float, nullable=False)
     stock = db.Column(db.Float, nullable=False)
+    price_tiers = db.Column(db.Text, nullable=False, default='{"1": 0}')  # JSON string of quantity-based prices
+
+    def get_price(self, quantity):
+        tiers = json.loads(self.price_tiers)
+        # Sort tiers by quantity in descending order
+        sorted_tiers = sorted([(int(q), float(p)) for q, p in tiers.items()], reverse=True)
+        # Find the first tier where quantity is less than or equal to the requested quantity
+        for tier_qty, tier_price in sorted_tiers:
+            if quantity >= tier_qty:
+                return tier_price
+        return float(tiers['1'])  # Default to base price if no tier matches
+
+    def set_price_tier(self, quantity, price):
+        tiers = json.loads(self.price_tiers)
+        tiers[str(quantity)] = float(price)
+        self.price_tiers = json.dumps(tiers)
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -47,6 +63,29 @@ class Sale(db.Model):
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        confirm_password = request.form['confirm_password']
+
+        if password != confirm_password:
+            flash('Passwords do not match')
+            return redirect(url_for('signup'))
+
+        if User.query.filter_by(username=username).first():
+            flash('Username already exists')
+            return redirect(url_for('signup'))
+
+        user = User(username=username)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        flash('Account created successfully! Please login.')
+        return redirect(url_for('login'))
+    return render_template('signup.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -78,14 +117,34 @@ def items():
         return redirect(url_for('home'))
     if request.method == 'POST':
         name = request.form['name']
-        price = float(request.form['price'])
         stock = float(request.form['stock'])
-        new_item = Item(name=name, price=price, stock=stock)
+        base_price = float(request.form['base_price'])
+        new_item = Item(name=name, stock=stock)
+        new_item.set_price_tier(1, base_price)
         db.session.add(new_item)
         db.session.commit()
         return redirect(url_for('items'))
     all_items = Item.query.all()
     return render_template('items.html', items=all_items)
+
+@app.route('/edit_item/<int:item_id>', methods=['GET', 'POST'])
+@login_required
+def edit_item(item_id):
+    if not current_user.is_admin:
+        flash('You do not have permission to edit items')
+        return redirect(url_for('home'))
+    
+    item = Item.query.get_or_404(item_id)
+    if request.method == 'POST':
+        quantity = int(request.form['quantity'])
+        price = float(request.form['price'])
+        item.set_price_tier(quantity, price)
+        db.session.commit()
+        flash('Price tier updated successfully')
+        return redirect(url_for('items'))
+    
+    tiers = json.loads(item.price_tiers)
+    return render_template('edit_item.html', item=item, tiers=tiers)
 
 @app.route('/delete_item/<int:item_id>', methods=['POST'])
 @login_required
@@ -99,6 +158,7 @@ def delete_item(item_id):
     return redirect(url_for('items'))
 
 @app.route('/sales', methods=['GET', 'POST'])
+@login_required
 def sales():
     items = Item.query.all()
     if request.method == 'POST':
@@ -106,7 +166,8 @@ def sales():
         quantity = float(request.form['quantity'])
         item = Item.query.get(item_id)
         if item and item.stock >= quantity:
-            total_price = item.price * quantity
+            price = item.get_price(quantity)
+            total_price = price * quantity
             sale = Sale(item_id=item_id, quantity=quantity, total_price=total_price)
             item.stock -= quantity
             db.session.add(sale)
@@ -118,6 +179,7 @@ def sales():
     return render_template('sales.html', items=items, sales=sales_list)
 
 @app.route('/report')
+@login_required
 def report():
     total_sales = db.session.query(func.sum(Sale.total_price)).scalar() or 0
     sales_data = db.session.query(Sale.item_id, func.sum(Sale.quantity)).group_by(Sale.item_id).all()
@@ -127,7 +189,6 @@ def report():
         if item:
             most_sold.append({'name': item.name, 'quantity_sold': quantity_sold})
     most_sold.sort(key=lambda x: x['quantity_sold'], reverse=True)
-    # Daily sales summary
     daily_sales = db.session.query(func.date(Sale.timestamp), func.sum(Sale.total_price)).group_by(func.date(Sale.timestamp)).all()
     return render_template('report.html', total_sales=total_sales, most_sold=most_sold, daily_sales=daily_sales)
 
@@ -138,12 +199,10 @@ def download_report():
         flash('You do not have permission to download reports')
         return redirect(url_for('home'))
     
-    # Create CSV data
     si = StringIO()
     cw = csv.writer(si)
     
-    # Write sales data
-    cw.writerow(['Date', 'Item', 'Quantity', 'Total Price'])
+    cw.writerow(['Date', 'Item', 'Quantity', 'Total Price (KES)'])
     sales = Sale.query.order_by(Sale.timestamp.desc()).all()
     for sale in sales:
         item = Item.query.get(sale.item_id)
@@ -157,7 +216,6 @@ def download_report():
     output = si.getvalue()
     si.close()
     
-    # Create the response
     return send_file(
         StringIO(output),
         mimetype='text/csv',
@@ -168,7 +226,6 @@ def download_report():
 # Initialize the database and create admin user if not exists
 with app.app_context():
     db.create_all()
-    # Create admin user if not exists
     admin = User.query.filter_by(username='admin').first()
     if not admin:
         admin = User(username='admin', is_admin=True)
