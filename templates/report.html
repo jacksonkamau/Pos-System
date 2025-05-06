@@ -3,6 +3,12 @@
 {% block content %}
 <h2>Sales Report</h2>
 
+{% if current_user.is_admin %}
+<div class="mb-4">
+    <a href="{{ url_for('download_report') }}" class="btn btn-primary">Download Report (CSV)</a>
+</div>
+{% endif %}
+
 <div class="card mb-4">
     <div class="card-body">
         <h3 class="card-title">Total Sales</h3>

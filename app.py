@@ -1,14 +1,35 @@
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
 import os
 from sqlalchemy import func
+import csv
+from io import StringIO
+from datetime import datetime
 
 app = Flask(__name__)
 # Use absolute path for database
 basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'pos.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = 'your-secret-key-here'  # Change this to a secure secret key
 db = SQLAlchemy(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(120), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
 class Item(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -23,12 +44,38 @@ class Sale(db.Model):
     total_price = db.Column(db.Float, nullable=False)
     timestamp = db.Column(db.DateTime, server_default=db.func.now())
 
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password):
+            login_user(user)
+            return redirect(url_for('home'))
+        flash('Invalid username or password')
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
 @app.route('/')
 def home():
     return render_template('home.html')
 
 @app.route('/items', methods=['GET', 'POST'])
+@login_required
 def items():
+    if not current_user.is_admin:
+        flash('You do not have permission to access this page')
+        return redirect(url_for('home'))
     if request.method == 'POST':
         name = request.form['name']
         price = float(request.form['price'])
@@ -41,7 +88,11 @@ def items():
     return render_template('items.html', items=all_items)
 
 @app.route('/delete_item/<int:item_id>', methods=['POST'])
+@login_required
 def delete_item(item_id):
+    if not current_user.is_admin:
+        flash('You do not have permission to delete items')
+        return redirect(url_for('home'))
     item = Item.query.get_or_404(item_id)
     db.session.delete(item)
     db.session.commit()
@@ -80,9 +131,50 @@ def report():
     daily_sales = db.session.query(func.date(Sale.timestamp), func.sum(Sale.total_price)).group_by(func.date(Sale.timestamp)).all()
     return render_template('report.html', total_sales=total_sales, most_sold=most_sold, daily_sales=daily_sales)
 
-# Initialize the database
+@app.route('/download_report')
+@login_required
+def download_report():
+    if not current_user.is_admin:
+        flash('You do not have permission to download reports')
+        return redirect(url_for('home'))
+    
+    # Create CSV data
+    si = StringIO()
+    cw = csv.writer(si)
+    
+    # Write sales data
+    cw.writerow(['Date', 'Item', 'Quantity', 'Total Price'])
+    sales = Sale.query.order_by(Sale.timestamp.desc()).all()
+    for sale in sales:
+        item = Item.query.get(sale.item_id)
+        cw.writerow([
+            sale.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+            item.name,
+            sale.quantity,
+            sale.total_price
+        ])
+    
+    output = si.getvalue()
+    si.close()
+    
+    # Create the response
+    return send_file(
+        StringIO(output),
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=f'sales_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+    )
+
+# Initialize the database and create admin user if not exists
 with app.app_context():
     db.create_all()
+    # Create admin user if not exists
+    admin = User.query.filter_by(username='admin').first()
+    if not admin:
+        admin = User(username='admin', is_admin=True)
+        admin.set_password('admin123')  # Change this password in production
+        db.session.add(admin)
+        db.session.commit()
 
 if __name__ == '__main__':
     app.run(debug=True)
