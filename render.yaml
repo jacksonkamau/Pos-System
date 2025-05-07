@@ -3,7 +3,11 @@ services:
     name: pos-system
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn wsgi:application
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0 
+        value: 3.9.0
+      - key: FLASK_ENV
+        value: production
+      - key: FLASK_APP
+        value: wsgi.py 
