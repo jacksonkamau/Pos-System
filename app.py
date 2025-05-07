@@ -116,13 +116,26 @@ def items():
         flash('You do not have permission to access this page')
         return redirect(url_for('home'))
     if request.method == 'POST':
-        name = request.form['name']
-        stock = float(request.form['stock'])
-        base_price = float(request.form['base_price'])
-        new_item = Item(name=name, stock=stock)
-        new_item.set_price_tier(1, base_price)
-        db.session.add(new_item)
-        db.session.commit()
+        try:
+            name = request.form['name']
+            stock = float(request.form['stock'])
+            base_price = float(request.form['base_price'])
+            
+            if stock < 0 or base_price < 0:
+                flash('Stock and price must be positive numbers')
+                return redirect(url_for('items'))
+                
+            new_item = Item(name=name, stock=stock)
+            new_item.set_price_tier(1, base_price)
+            db.session.add(new_item)
+            db.session.commit()
+            flash('Item added successfully')
+        except ValueError as e:
+            flash('Invalid input: Please enter valid numbers for stock and price')
+            db.session.rollback()
+        except Exception as e:
+            flash(f'An error occurred: {str(e)}')
+            db.session.rollback()
         return redirect(url_for('items'))
     all_items = Item.query.all()
     return render_template('items.html', items=all_items)
@@ -136,11 +149,30 @@ def edit_item(item_id):
     
     item = Item.query.get_or_404(item_id)
     if request.method == 'POST':
-        quantity = int(request.form['quantity'])
-        price = float(request.form['price'])
-        item.set_price_tier(quantity, price)
-        db.session.commit()
-        flash('Price tier updated successfully')
+        try:
+            if 'update_stock' in request.form:
+                new_stock = float(request.form['new_stock'])
+                if new_stock < 0:
+                    flash('Stock cannot be negative')
+                    return redirect(url_for('edit_item', item_id=item_id))
+                item.stock = new_stock
+                db.session.commit()
+                flash('Stock updated successfully')
+            else:
+                quantity = int(request.form['quantity'])
+                price = float(request.form['price'])
+                if price < 0:
+                    flash('Price cannot be negative')
+                    return redirect(url_for('edit_item', item_id=item_id))
+                item.set_price_tier(quantity, price)
+                db.session.commit()
+                flash('Price tier updated successfully')
+        except ValueError as e:
+            flash('Invalid input: Please enter valid numbers')
+            db.session.rollback()
+        except Exception as e:
+            flash(f'An error occurred: {str(e)}')
+            db.session.rollback()
         return redirect(url_for('items'))
     
     tiers = json.loads(item.price_tiers)
@@ -199,29 +231,128 @@ def download_report():
         flash('You do not have permission to download reports')
         return redirect(url_for('home'))
     
-    si = StringIO()
-    cw = csv.writer(si)
+    try:
+        si = StringIO()
+        cw = csv.writer(si)
+        
+        # Write headers
+        cw.writerow(['Date', 'Item', 'Quantity', 'Total Price (KES)'])
+        
+        # Get all sales with their items
+        sales = Sale.query.order_by(Sale.timestamp.desc()).all()
+        
+        # Write data rows
+        for sale in sales:
+            item = Item.query.get(sale.item_id)
+            if item:  # Only write if item exists
+                cw.writerow([
+                    sale.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    item.name,
+                    f"{sale.quantity:.2f}",
+                    f"{sale.total_price:.2f}"
+                ])
+        
+        output = si.getvalue()
+        si.close()
+        
+        # Create response with proper headers
+        response = send_file(
+            StringIO(output),
+            mimetype='text/csv',
+            as_attachment=True,
+            download_name=f'sales_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        )
+        
+        # Add headers to prevent caching
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        
+        return response
+        
+    except Exception as e:
+        flash(f'Error generating report: {str(e)}')
+        return redirect(url_for('report'))
+
+@app.route('/change_password', methods=['GET', 'POST'])
+@login_required
+def change_password():
+    if request.method == 'POST':
+        current_password = request.form['current_password']
+        new_password = request.form['new_password']
+        confirm_password = request.form['confirm_password']
+        
+        if not current_user.check_password(current_password):
+            flash('Current password is incorrect')
+            return redirect(url_for('change_password'))
+            
+        if new_password != confirm_password:
+            flash('New passwords do not match')
+            return redirect(url_for('change_password'))
+            
+        current_user.set_password(new_password)
+        db.session.commit()
+        flash('Password changed successfully')
+        return redirect(url_for('home'))
+        
+    return render_template('change_password.html')
+
+@app.route('/users')
+@login_required
+def users():
+    if not current_user.is_admin:
+        flash('You do not have permission to access this page')
+        return redirect(url_for('home'))
+    all_users = User.query.all()
+    return render_template('users.html', users=all_users)
+
+@app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
+@login_required
+def edit_user(user_id):
+    if not current_user.is_admin:
+        flash('You do not have permission to edit users')
+        return redirect(url_for('home'))
     
-    cw.writerow(['Date', 'Item', 'Quantity', 'Total Price (KES)'])
-    sales = Sale.query.order_by(Sale.timestamp.desc()).all()
-    for sale in sales:
-        item = Item.query.get(sale.item_id)
-        cw.writerow([
-            sale.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            item.name,
-            sale.quantity,
-            sale.total_price
-        ])
+    user = User.query.get_or_404(user_id)
+    if request.method == 'POST':
+        try:
+            new_password = request.form.get('new_password')
+            is_admin = 'is_admin' in request.form
+            
+            if new_password:
+                user.set_password(new_password)
+            
+            user.is_admin = is_admin
+            db.session.commit()
+            flash('User updated successfully')
+            return redirect(url_for('users'))
+        except Exception as e:
+            flash(f'Error updating user: {str(e)}')
+            db.session.rollback()
     
-    output = si.getvalue()
-    si.close()
+    return render_template('edit_user.html', user=user)
+
+@app.route('/delete_user/<int:user_id>', methods=['POST'])
+@login_required
+def delete_user(user_id):
+    if not current_user.is_admin:
+        flash('You do not have permission to delete users')
+        return redirect(url_for('home'))
     
-    return send_file(
-        StringIO(output),
-        mimetype='text/csv',
-        as_attachment=True,
-        download_name=f'sales_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
-    )
+    if user_id == current_user.id:
+        flash('You cannot delete your own account')
+        return redirect(url_for('users'))
+    
+    user = User.query.get_or_404(user_id)
+    try:
+        db.session.delete(user)
+        db.session.commit()
+        flash('User deleted successfully')
+    except Exception as e:
+        flash(f'Error deleting user: {str(e)}')
+        db.session.rollback()
+    
+    return redirect(url_for('users'))
 
 # Initialize the database and create admin user if not exists
 with app.app_context():

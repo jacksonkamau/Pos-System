@@ -10,6 +10,21 @@
         
         <div class="card mb-4">
             <div class="card-header">
+                <h4>Update Stock</h4>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="new_stock" class="form-label">Current Stock: {{ "%.2f"|format(item.stock) }}</label>
+                        <input type="number" class="form-control" id="new_stock" name="new_stock" step="0.01" min="0" required>
+                    </div>
+                    <button type="submit" name="update_stock" class="btn btn-primary">Update Stock</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
                 <h4>Current Price Tiers</h4>
             </div>
             <div class="card-body">
