@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Shops Management</h2>
+        <a href="{{ url_for('add_shop') }}" class="btn btn-primary">Add New Shop</a>
+    </div>
+    
+    <div class="card">
+        <div class="card-body">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Shop Name</th>
+                        <th>Location</th>
+                        <th>Created At</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for shop in shops %}
+                    <tr>
+                        <td>{{ shop.name }}</td>
+                        <td>{{ shop.location }}</td>
+                        <td>{{ shop.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td>
+                            <a href="{{ url_for('shop_users', shop_id=shop.id) }}" class="btn btn-sm btn-primary">Manage Users</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %} 

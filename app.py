@@ -20,11 +20,23 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
+class Shop(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    location = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+    users = db.relationship('User', backref='shop', lazy=True)
+    items = db.relationship('Item', backref='shop', lazy=True)
+
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(120), nullable=False)
     is_admin = db.Column(db.Boolean, default=False)
+    is_shop_admin = db.Column(db.Boolean, default=False)  # Shop-specific admin
+    shop_id = db.Column(db.Integer, db.ForeignKey('shop.id'))
+    is_active = db.Column(db.Boolean, default=False)  # For user approval
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -37,21 +49,30 @@ class Item(db.Model):
     name = db.Column(db.String(100), nullable=False)
     stock = db.Column(db.Float, nullable=False)
     price_tiers = db.Column(db.Text, nullable=False, default='{"1": 0}')  # JSON string of quantity-based prices
+    shop_id = db.Column(db.Integer, db.ForeignKey('shop.id'), nullable=False)
 
     def get_price(self, quantity):
-        tiers = json.loads(self.price_tiers)
-        # Sort tiers by quantity in descending order
-        sorted_tiers = sorted([(int(q), float(p)) for q, p in tiers.items()], reverse=True)
-        # Find the first tier where quantity is less than or equal to the requested quantity
-        for tier_qty, tier_price in sorted_tiers:
-            if quantity >= tier_qty:
-                return tier_price
-        return float(tiers['1'])  # Default to base price if no tier matches
+        try:
+            tiers = json.loads(self.price_tiers) if self.price_tiers else {"1": 0}
+            # Sort tiers by quantity in descending order
+            sorted_tiers = sorted([(int(q), float(p)) for q, p in tiers.items()], reverse=True)
+            # Find the first tier where quantity is less than or equal to the requested quantity
+            for tier_qty, tier_price in sorted_tiers:
+                if quantity >= tier_qty:
+                    return tier_price
+            return float(tiers.get('1', 0))  # Default to base price if no tier matches
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            # If there's any error parsing JSON, return a default price
+            return 0.0
 
     def set_price_tier(self, quantity, price):
-        tiers = json.loads(self.price_tiers)
-        tiers[str(quantity)] = float(price)
-        self.price_tiers = json.dumps(tiers)
+        try:
+            tiers = json.loads(self.price_tiers) if self.price_tiers else {"1": 0}
+            tiers[str(quantity)] = float(price)
+            self.price_tiers = json.dumps(tiers)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            # If there's any error, set a default price tier
+            self.price_tiers = json.dumps({"1": float(price)})
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -67,25 +88,53 @@ def load_user(user_id):
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
     if request.method == 'POST':
-        username = request.form['username']
+        username = request.form['username'].strip()
         password = request.form['password']
         confirm_password = request.form['confirm_password']
+        shop_id = request.form.get('shop_id', type=int)
+
+        # Validate username
+        if len(username) < 3:
+            flash('Username must be at least 3 characters long')
+            return redirect(url_for('signup'))
+
+        # Validate password
+        if len(password) < 8:
+            flash('Password must be at least 8 characters long')
+            return redirect(url_for('signup'))
 
         if password != confirm_password:
             flash('Passwords do not match')
             return redirect(url_for('signup'))
 
+        # Check if username already exists
         if User.query.filter_by(username=username).first():
             flash('Username already exists')
             return redirect(url_for('signup'))
 
-        user = User(username=username)
-        user.set_password(password)
-        db.session.add(user)
-        db.session.commit()
-        flash('Account created successfully! Please login.')
-        return redirect(url_for('login'))
-    return render_template('signup.html')
+        # Validate shop
+        if not shop_id or not Shop.query.get(shop_id):
+            flash('Please select a valid shop')
+            return redirect(url_for('signup'))
+
+        try:
+            user = User(
+                username=username,
+                shop_id=shop_id,
+                is_active=False  # Requires admin approval
+            )
+            user.set_password(password)
+            db.session.add(user)
+            db.session.commit()
+            flash('Account created successfully! Please wait for admin approval.')
+            return redirect(url_for('login'))
+        except Exception as e:
+            db.session.rollback()
+            flash('An error occurred while creating your account. Please try again.')
+            return redirect(url_for('signup'))
+
+    shops = Shop.query.all()
+    return render_template('signup.html', shops=shops)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -93,7 +142,11 @@ def login():
         username = request.form['username']
         password = request.form['password']
         user = User.query.filter_by(username=username).first()
+        
         if user and user.check_password(password):
+            if not user.is_active:
+                flash('Your account is pending approval. Please contact your administrator.')
+                return redirect(url_for('login'))
             login_user(user)
             return redirect(url_for('home'))
         flash('Invalid username or password')
@@ -137,7 +190,18 @@ def items():
             flash(f'An error occurred: {str(e)}')
             db.session.rollback()
         return redirect(url_for('items'))
-    all_items = Item.query.all()
+    
+    try:
+        all_items = Item.query.all()
+        # Ensure all items have valid price_tiers
+        for item in all_items:
+            if not item.price_tiers:
+                item.price_tiers = '{"1": 0}'
+                db.session.commit()
+    except Exception as e:
+        flash(f'Error loading items: {str(e)}')
+        all_items = []
+    
     return render_template('items.html', items=all_items)
 
 @app.route('/edit_item/<int:item_id>', methods=['GET', 'POST'])
@@ -175,7 +239,13 @@ def edit_item(item_id):
             db.session.rollback()
         return redirect(url_for('items'))
     
-    tiers = json.loads(item.price_tiers)
+    try:
+        tiers = json.loads(item.price_tiers) if item.price_tiers else {"1": 0}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        tiers = {"1": 0}
+        item.price_tiers = json.dumps(tiers)
+        db.session.commit()
+    
     return render_template('edit_item.html', item=item, tiers=tiers)
 
 @app.route('/delete_item/<int:item_id>', methods=['POST'])
@@ -353,6 +423,72 @@ def delete_user(user_id):
         db.session.rollback()
     
     return redirect(url_for('users'))
+
+@app.route('/shops')
+@login_required
+def shops():
+    if not current_user.is_admin:
+        flash('You do not have permission to access this page')
+        return redirect(url_for('home'))
+    all_shops = Shop.query.all()
+    return render_template('shops.html', shops=all_shops)
+
+@app.route('/add_shop', methods=['GET', 'POST'])
+@login_required
+def add_shop():
+    if not current_user.is_admin:
+        flash('You do not have permission to access this page')
+        return redirect(url_for('home'))
+    
+    if request.method == 'POST':
+        name = request.form['name'].strip()
+        location = request.form['location'].strip()
+        
+        if Shop.query.filter_by(name=name).first():
+            flash('Shop name already exists')
+            return redirect(url_for('add_shop'))
+        
+        try:
+            shop = Shop(name=name, location=location)
+            db.session.add(shop)
+            db.session.commit()
+            flash('Shop added successfully')
+            return redirect(url_for('shops'))
+        except Exception as e:
+            db.session.rollback()
+            flash('An error occurred while adding the shop')
+            return redirect(url_for('add_shop'))
+    
+    return render_template('add_shop.html')
+
+@app.route('/shop_users/<int:shop_id>')
+@login_required
+def shop_users(shop_id):
+    if not (current_user.is_admin or (current_user.is_shop_admin and current_user.shop_id == shop_id)):
+        flash('You do not have permission to access this page')
+        return redirect(url_for('home'))
+    
+    shop = Shop.query.get_or_404(shop_id)
+    users = User.query.filter_by(shop_id=shop_id).all()
+    return render_template('shop_users.html', shop=shop, users=users)
+
+@app.route('/approve_user/<int:user_id>', methods=['POST'])
+@login_required
+def approve_user(user_id):
+    if not (current_user.is_admin or (current_user.is_shop_admin and current_user.shop_id == user.shop_id)):
+        flash('You do not have permission to approve users')
+        return redirect(url_for('home'))
+    
+    user = User.query.get_or_404(user_id)
+    try:
+        user.is_active = True
+        db.session.commit()
+        flash('User approved successfully')
+    except Exception as e:
+        db.session.rollback()
+        flash('Error approving user')
+    
+    return redirect(url_for('shop_users', shop_id=user.shop_id))
 
 # Initialize the database and create admin user if not exists
 with app.app_context():
